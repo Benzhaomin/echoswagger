@@ -1,6 +1,7 @@
 English | [简体中文](./README_zh-CN.md)
 
 # Echoswagger
+
 [Swagger UI](https://github.com/swagger-api/swagger-ui) generator for [Echo](https://github.com/labstack/echo) framework
 
 [![Ci](https://github.com/elvinchan/gobeeq/actions/workflows/ci.yml/badge.svg)](https://github.com/elvinchan/gobeeq/actions/workflows/ci.yml)
@@ -9,28 +10,35 @@ English | [简体中文](./README_zh-CN.md)
 [![codecov](https://codecov.io/gh/pangpanglabs/echoswagger/branch/master/graph/badge.svg)](https://codecov.io/gh/pangpanglabs/echoswagger)
 
 ## Feature
+
 - No SwaggerUI HTML/CSS dependency
 - Highly integrated with Echo, low intrusive design
 - Take advantage of the strong typing language and chain programming to make it easy to use
 - Recycle garbage in time, low memory usage
 
 ## Installation
+
 ```
 go get github.com/pangpanglabs/echoswagger
 ```
 
 ## Go modules support
+
 If your project has migrated to Go modules, you can:
+
 - Choose v2 version of Echoswagger for Echo version v4.
 - Choose v1 version of Echoswagger for Echo version <= v3 .
 
 To use v2 version, just do:
+
 - `go get github.com/pangpanglabs/echoswagger/v2`
 - import `github.com/labstack/echo/v4` and `github.com/pangpanglabs/echoswagger/v2` in your project
 
-Meanwhile, v1 version will still be updated if needed. For more details of Go modules, please refer to [Go Wiki](https://github.com/golang/go/wiki/Modules).
+Meanwhile, v1 version will still be updated if needed. For more details of Go modules, please refer
+to [Go Wiki](https://github.com/golang/go/wiki/Modules).
 
 ## Example
+
 ```go
 package main
 
@@ -66,55 +74,80 @@ func createUser(c echo.Context) error {
 ```
 
 ## Usage
+
 #### Create a `ApiRoot` with `New()`, which is a wrapper of `echo.New()`
+
 ```go
 r := echoswagger.New(echo.New(), "/doc", nil)
 ```
+
 You can use the result `ApiRoot` instance to:
+
 - Setup Security definitions, request/response Content-Types, UI options, Scheme, etc.
+
 ```go
 r.AddSecurityAPIKey("JWT", "JWT Token", echoswagger.SecurityInHeader).
 	SetRequestContentType("application/x-www-form-urlencoded", "multipart/form-data").
 	SetUI(UISetting{HideTop: true}).
 	SetScheme("https", "http")
 ```
+
 - Get `echo.Echo` instance.
+
 ```go
 r.Echo()
 ```
-- Registers a new GET, POST, PUT, DELETE, OPTIONS, HEAD or PATCH route in default group, these are wrappers of Echo's create route methods.
-It returns a new `Api` instance.
+
+- Registers a new GET, POST, PUT, DELETE, OPTIONS, HEAD or PATCH route in default group, these are wrappers of Echo's
+  create route methods. It returns a new `Api` instance.
+
 ```go
 r.GET("/:id", handler)
 ```
+
 - And: ↓
 
 #### Create a `ApiGroup` with `Group()`, which is a wrapper of `echo.Group()`
+
 ```go
 g := r.Group("Users", "/users")
 ```
+
 You can use the result `ApiGroup` instance to:
+
 - Set description, etc.
+
 ```go
 g.SetDescription("The desc of group")
 ```
+
 - Set security for all routes in this group.
+
 ```go
 g.SetSecurity("JWT")
 ```
+
 - Get `echo.Group` instance.
+
 ```go
 g.EchoGroup()
 ```
+
 - And: ↓
 
 #### Registers a new route in `ApiGroup`
-GET, POST, PUT, DELETE, OPTIONS, HEAD or PATCH methods are supported by Echoswagger, these are wrappers of Echo's create route methods.
+
+GET, POST, PUT, DELETE, OPTIONS, HEAD or PATCH methods are supported by Echoswagger, these are wrappers of Echo's create
+route methods.
+
 ```go
 a := g.GET("/:id", handler)
 ```
+
 You can use the result `Api` instance to:
+
 - Add parameter with these methods:
+
 ```go
 AddParamPath(p interface{}, name, desc string)
 
@@ -137,9 +170,11 @@ AddParamBody(p interface{}, name, desc string, required bool)
 AddParamFile(name, desc string, required bool)
 ```
 
-The methods which name's suffix are `Nested` means these methods treat parameter `p` 's fields as paramters, so it must be a struct type.
+The methods which name's suffix are `Nested` means these methods treat parameter `p` 's fields as paramters, so it must
+be a struct type.
 
 e.g.
+
 ```go
 type SearchInput struct {
 	Q         string `query:"q" swagger:"desc(Keywords),required"`
@@ -147,29 +182,39 @@ type SearchInput struct {
 }
 a.AddParamQueryNested(SearchInput{})
 ```
+
 Is equivalent to:
+
 ```go
 a.AddParamQuery("", "q", "Keywords", true).
 	AddParamQuery(0, "skipCount", "", false)
 ```
+
 - Add responses.
+
 ```go
 a.AddResponse(http.StatusOK, "response desc", body{}, nil)
 ```
+
 - Set Security, request/response Content-Types, summary, description, etc.
+
 ```go
 a.SetSecurity("JWT").
 	SetResponseContentType("application/xml").
 	SetSummary("The summary of API").
 	SetDescription("The desc of API")
 ```
+
 - Get `echo.Route` instance.
+
 ```go
 a.Route()
 ```
 
 #### With `swagger` tag, you can set more info with `AddParam...` methods.
+
 e.g.
+
 ```go
 type User struct {
 	Age    int       `swagger:"min(0),max(99)"`
@@ -178,7 +223,9 @@ type User struct {
 }
 a.AddParamBody(&User{}, "Body", "", true)
 ```
+
 The definition is equivalent to:
+
 ```json
 {
     "definitions": {
@@ -234,6 +281,7 @@ enum | [*] | Enumerate value, multiple values should be separated by "\|"
 default | * | Default value, which type is same as the field's type.
 
 ## Reference
+
 [OpenAPI Specification 2.0](https://github.com/OAI/OpenAPI-Specification/blob/master/versions/2.0.md)
 
 ## License

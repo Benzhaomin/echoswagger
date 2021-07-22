@@ -12,7 +12,7 @@ import (
 )
 
 func prepareApiRoot() ApiRoot {
-	r := New(echo.New(), "doc/", nil)
+	r := New(echo.New(), nil)
 	r.SetUI(UISetting{DetachSpec: true})
 	return r
 }
@@ -68,10 +68,10 @@ func TestNew(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.panic {
 				assert.Panics(t, func() {
-					New(tt.echo, tt.docPath, tt.info)
+					New(tt.echo, tt.info)
 				})
 			} else {
-				apiRoot := New(tt.echo, tt.docPath, tt.info)
+				apiRoot := New(tt.echo, tt.info)
 				assert.NotNil(t, apiRoot.(*Root))
 
 				r := apiRoot.(*Root)
@@ -118,7 +118,7 @@ func TestPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			apiRoot := New(echo.New(), tt.docInput, nil)
+			apiRoot := New(echo.New(), nil)
 			r := apiRoot.(*Root)
 			assert.NotNil(t, r.echo)
 			assert.Len(t, r.echo.Routes(), 2)
@@ -353,7 +353,7 @@ func TestAddResponse(t *testing.T) {
 
 func TestUI(t *testing.T) {
 	t.Run("DefaultCDN", func(t *testing.T) {
-		r := New(echo.New(), "doc/", nil)
+		r := New(echo.New(), nil)
 		se := r.(*Root)
 		req := httptest.NewRequest(echo.GET, "/doc/", nil)
 		rec := httptest.NewRecorder()
@@ -367,7 +367,7 @@ func TestUI(t *testing.T) {
 	})
 
 	t.Run("SetUI", func(t *testing.T) {
-		r := New(echo.New(), "doc/", nil)
+		r := New(echo.New(), nil)
 		se := r.(*Root)
 		req := httptest.NewRequest(echo.GET, "/doc/", nil)
 		rec := httptest.NewRecorder()

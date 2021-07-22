@@ -4,12 +4,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSecurity(t *testing.T) {
-	r := New(echo.New(), "doc/", nil)
+	r := New(echo.New(), nil)
 	scope := map[string]string{
 		"read:users":  "read users",
 		"write:users": "modify users",
@@ -194,7 +193,7 @@ func TestSecurity(t *testing.T) {
 }
 
 func TestSecurityRepeat(t *testing.T) {
-	r := New(echo.New(), "doc/", nil)
+	r := New(echo.New(), nil)
 	scope := map[string]string{
 		"read:users":  "read users",
 		"write:users": "modify users",

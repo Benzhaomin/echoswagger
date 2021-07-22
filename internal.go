@@ -2,10 +2,10 @@ package echoswagger
 
 import (
 	"bytes"
-	"encoding/json"
 	"html/template"
 	"net/http"
 	"reflect"
+	"encoding/json"
 
 	"github.com/labstack/echo/v4"
 )
@@ -26,18 +26,41 @@ type UISetting struct {
 	CDN        string
 }
 
-type RawDefineDic map[string]RawDefine
+type RawDefineDic struct {
+	Schemas   map[string]RawDefineSchema
+	Responses map[int]RawDefineReponse
+}
 
-type RawDefine struct {
+type RawDefineSchema struct {
 	Value  reflect.Value
 	Schema *JSONSchema
 }
 
+type RawDefineReponse struct {
+	Response *Response
+}
+
+func (r *Root) HTML(c echo.Context) error {
+	return c.HTML(http.StatusOK, oauthRedirect)
+}
+
 func (r *Root) docHandler(docPath string) echo.HandlerFunc {
-	t, err := template.New("swagger").Parse(SwaggerUIContent)
+	t, err := template.New("swagger").Parse(swaggerHTMLTemplate)
 	if err != nil {
 		panic(err)
 	}
+
+	cdn := r.ui.CDN
+	if cdn == "" {
+		cdn = DefaultCDN
+	}
+	buf := new(bytes.Buffer)
+	params := map[string]interface{}{
+		"title": r.spec.Info.Title,
+		"cdn":   cdn,
+	}
+	t.Execute(buf, params)
+
 	return func(c echo.Context) error {
 		cdn := r.ui.CDN
 		if cdn == "" {
@@ -72,18 +95,51 @@ func (r *Root) docHandler(docPath string) echo.HandlerFunc {
 }
 
 func (r *RawDefineDic) getKey(v reflect.Value) (bool, string) {
-	for k, d := range *r {
-		if reflect.DeepEqual(d.Value.Interface(), v.Interface()) {
-			return true, k
-		}
-	}
 	name := v.Type().Name()
-	for k := range *r {
-		if name == k {
-			name += "_"
+
+	if i, ok := v.Interface().(Name); ok {
+		name = i.StructName()
+	}
+
+	if _, ok := r.Schemas[name]; ok {
+		return true, name
+	}
+
+	return false, name
+}
+
+func (r *RawDefineDic) handleParamStruct(rt reflect.Value, in ParamInType, o *Operation) {
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Type().Field(i)
+		if f.Type.Kind() == reflect.Struct && f.Anonymous {
+			r.handleParamStruct(rt.Field(i), in, o)
+		} else {
+			name, _ := getFieldName(f, in)
+			if name == "-" {
+				continue
+			}
+			schema := r.genSchema(rt.Field(i))
+
+			pm := &Parameter{
+				Name:   name,
+				In:     string(in),
+				Schema: schema,
+			}
+
+			pm.Name = o.rename(pm.Name)
+			o.Parameters = append(o.Parameters, pm)
+
+			tags := getSwaggerTags(f)
+
+			if _, ok := tags["required"]; ok {
+				pm.Required = true
+			}
+
+			if schema.Ref == "" {
+				handleSwaggerTags(schema, f, tags)
+			}
 		}
 	}
-	return false, name
 }
 
 func (r *routers) appendRoute(route *echo.Route) *api {
@@ -103,49 +159,58 @@ func (g *api) addParams(p interface{}, in ParamInType, name, desc string, requir
 	if !isValidParam(reflect.TypeOf(p), nest, false) {
 		panic("echoswagger: invalid " + string(in) + " param")
 	}
-	rt := indirectType(p)
-	st, sf := toSwaggerType(rt)
+	rt := indirectValue(p)
+	st, sf := toSwaggerType(rt.Type())
 	if st == "object" && sf == "object" {
-		g.operation.handleParamStruct(rt, in)
+		g.defs.handleParamStruct(rt, in, &g.operation)
 	} else {
 		name = g.operation.rename(name)
+		schema := &JSONSchema{
+			Type: JSONType(st),
+		}
 		pm := &Parameter{
 			Name:        name,
 			In:          string(in),
 			Description: desc,
 			Required:    required,
-			Type:        st,
+			Schema:      schema,
 		}
 		if st == "array" {
-			pm.Items = Items{}.generate(rt.Elem())
-			pm.CollectionFormat = "multi"
+			schema.Items = g.defs.genSchema(rt)
 		} else {
-			pm.Format = sf
+			schema.Format = sf
 		}
+
 		g.operation.Parameters = append(g.operation.Parameters, pm)
 	}
 	return g
 }
 
-func (g *api) addBodyParams(p interface{}, name, desc string, required bool) Api {
+func (g *api) addBodyParams(p interface{}, contentType, desc string, required bool) Api {
 	if !isValidSchema(reflect.TypeOf(p), false) {
 		panic("echoswagger: invalid body parameter")
 	}
-	for _, param := range g.operation.Parameters {
-		if param.In == string(ParamInBody) {
-			panic("echoswagger: multiple body parameters are not allowed")
+
+	if g.operation.RequestBody == nil {
+		g.operation.RequestBody = &RequestBody{
+			Description: desc,
+			Required:    true,
+			Content:     map[string]MediaType{},
+		}
+	}
+
+	for key, _ := range g.operation.RequestBody.Content {
+		if key == contentType {
+			panic("echoswagger: multiple content type in request body are not allowed")
 		}
 	}
 
 	rv := indirectValue(p)
-	pm := &Parameter{
-		Name:        name,
-		In:          string(ParamInBody),
-		Description: desc,
-		Required:    required,
-		Schema:      g.defs.genSchema(rv),
+
+	g.operation.RequestBody.Content[contentType] = MediaType{
+		Schema: g.defs.genSchema(rv),
 	}
-	g.operation.Parameters = append(g.operation.Parameters, pm)
+
 	return g
 }
 
@@ -156,18 +221,4 @@ func (o Operation) rename(s string) string {
 		}
 	}
 	return s
-}
-
-func (o *Operation) handleParamStruct(rt reflect.Type, in ParamInType) {
-	for i := 0; i < rt.NumField(); i++ {
-		if rt.Field(i).Type.Kind() == reflect.Struct && rt.Field(i).Anonymous {
-			o.handleParamStruct(rt.Field(i).Type, in)
-		} else {
-			pm := Parameter{}.generate(rt.Field(i), in)
-			if pm != nil {
-				pm.Name = o.rename(pm.Name)
-				o.Parameters = append(o.Parameters, pm)
-			}
-		}
-	}
 }

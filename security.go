@@ -30,7 +30,7 @@ func (r *Root) checkSecurity(name string) bool {
 	if name == "" {
 		return false
 	}
-	if _, ok := r.spec.SecurityDefinitions[name]; ok {
+	if _, ok := r.spec.Components.SecuritySchemes[name]; ok {
 		return false
 	}
 	return true
@@ -59,17 +59,27 @@ func setSecurityWithScope(security []map[string][]string, s ...map[string][]stri
 	return security
 }
 
-func (o *Operation) addSecurity(defs map[string]*SecurityDefinition, security []map[string][]string) error {
+func (o *Operation) addSecurity(defs map[string]*SecurityScheme, security []map[string][]string) error {
+	if security == nil {
+		return nil
+	}
+
+	if o.Security == nil {
+		security := make([]map[string][]string, 0)
+		o.Security = &security
+	}
+
 	for _, scy := range security {
 		for k := range scy {
 			if _, ok := defs[k]; !ok {
 				return errors.New("echoswagger: not found SecurityDefinition with name: " + k)
 			}
 		}
-		if containsMap(o.Security, scy) {
+
+		if containsMap(*o.Security, scy) {
 			continue
 		}
-		o.Security = append(o.Security, scy)
+		*o.Security = append(*o.Security, scy)
 	}
 	return nil
 }

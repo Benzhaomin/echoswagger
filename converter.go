@@ -1,6 +1,8 @@
 package echoswagger
 
 import (
+	"encoding/json"
+	"github.com/google/uuid"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,11 +14,20 @@ func toSwaggerType(t reflect.Type) (string, string) {
 	if t == reflect.TypeOf(time.Time{}) {
 		return "string", "date-time"
 	}
+	if t == reflect.TypeOf(uuid.UUID{}) {
+		return "string", "uuid"
+	}
+
+	typ := reflect.New(t)
+	if _, ok := typ.Interface().(Enum); ok {
+		return "object", "enum"
+	}
+
 	switch t.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uintptr:
+	case reflect.Int8, reflect.Int16, reflect.Int32,
+		reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uintptr:
 		return "integer", "int32"
-	case reflect.Int64, reflect.Uint64:
+	case reflect.Int64, reflect.Uint64, reflect.Int, reflect.Uint:
 		return "integer", "int64"
 	case reflect.Float32:
 		return "number", "float"
@@ -85,7 +96,38 @@ func converter(t reflect.Type) func(s string) (interface{}, error) {
 			return v, err
 		}
 	} else if st == "array" && sf == "array" {
-		return converter(t.Elem())
+		f := converter(t.Elem())
+
+		return func(s string) (interface{}, error) {
+
+			split := strings.Split(s, ",")
+			slice := make([]interface{}, len(split))
+
+			for i, elem := range split {
+				convertedElem, err := f(elem)
+
+				if err != nil {
+					return nil, err
+				}
+
+				slice[i] = convertedElem
+			}
+
+			return slice, nil
+		}
+
+		return f
+	} else if st == "object" {
+		return func(s string) (interface{}, error) {
+			typ := reflect.New(t)
+			example := typ.Interface()
+
+			if err := json.Unmarshal([]byte(s), example); err != nil {
+				return nil, err
+			}
+
+			return example, nil
+		}
 	} else {
 		return func(s string) (interface{}, error) {
 			return s, nil

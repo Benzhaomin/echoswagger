@@ -1,11 +1,9 @@
 package echoswagger
 
 import (
-	"reflect"
+	"github.com/labstack/echo/v4"
 	"strconv"
 	"sync"
-
-	"github.com/labstack/echo/v4"
 )
 
 /*
@@ -48,6 +46,7 @@ type ApiRouter interface {
 
 type ApiRoot interface {
 	ApiRouter
+	BindEcho(docPath string, m ...echo.MiddlewareFunc)
 
 	// Bind an existing Echo group
 	// note: this is usually used to create nested Echo groups
@@ -58,17 +57,14 @@ type ApiRoot interface {
 	// Group overrides `Echo#Group()` and creates ApiGroup.
 	Group(name, prefix string, m ...echo.MiddlewareFunc) ApiGroup
 
-	// SetRequestContentType sets request content types.
-	SetRequestContentType(types ...string) ApiRoot
-
-	// SetResponseContentType sets response content types.
-	SetResponseContentType(types ...string) ApiRoot
-
 	// SetExternalDocs sets external docs.
 	SetExternalDocs(desc, url string) ApiRoot
 
 	// AddSecurityBasic adds `SecurityDefinition` with type basic.
 	AddSecurityBasic(name, desc string) ApiRoot
+
+	// AddSecurityBasic adds `SecurityDefinition` with type basic.
+	AddSecurityBearer(name string) ApiRoot
 
 	// AddSecurityAPIKey adds `SecurityDefinition` with type apikey.
 	AddSecurityAPIKey(name, desc string, in SecurityInType) ApiRoot
@@ -80,9 +76,6 @@ type ApiRoot interface {
 	// If DetachSpec is false, HideTop will not take effect
 	SetUI(ui UISetting) ApiRoot
 
-	// SetScheme sets available protocol schemes.
-	SetScheme(schemes ...string) ApiRoot
-
 	// GetRaw returns raw `Swagger`. Only special case should use.
 	GetRaw() *Swagger
 
@@ -91,6 +84,9 @@ type ApiRoot interface {
 
 	// Echo returns the embedded Echo instance
 	Echo() *echo.Echo
+
+	// Add generic response
+	AddResponse(code int, contentType, desc string, schema, example interface{})
 }
 
 type ApiGroup interface {
@@ -105,6 +101,8 @@ type ApiGroup interface {
 	// SetSecurity sets Security for all operations within the ApiGroup
 	// which names are reigistered by AddSecurity... functions.
 	SetSecurity(names ...string) ApiGroup
+
+	NoSecurity() ApiGroup
 
 	// SetSecurityWithScope sets Security with scopes for all operations
 	// within the ApiGroup which names are reigistered
@@ -146,20 +144,14 @@ type Api interface {
 	AddParamHeaderNested(p interface{}) Api
 
 	// AddParamBody adds body parameter.
-	AddParamBody(p interface{}, name, desc string, required bool) Api
+	AddParamBody(p interface{}, contentType, desc string, required bool) Api
 
 	// AddParamFile adds file parameter.
 	AddParamFile(name, desc string, required bool) Api
 
 	// AddResponse adds response for Api.
 	// Header must be struct type.
-	AddResponse(code int, desc string, schema interface{}, header interface{}) Api
-
-	// SetRequestContentType sets request content types.
-	SetRequestContentType(types ...string) Api
-
-	// SetResponseContentType sets response content types.
-	SetResponseContentType(types ...string) Api
+	AddResponse(code int, contentType, desc string, schema interface{}, header interface{}) Api
 
 	// SetOperationId sets operationId
 	SetOperationId(id string) Api
@@ -187,6 +179,7 @@ type Api interface {
 
 	// Route returns the embedded `echo.Route` instance.
 	Route() *echo.Route
+	AddGenericResponses(status ...int)
 }
 
 type routers struct {
@@ -220,7 +213,7 @@ type api struct {
 
 // New creates ApiRoot instance.
 // Multiple ApiRoot are allowed in one project.
-func New(e *echo.Echo, docPath string, i *Info, m ...echo.MiddlewareFunc) ApiRoot {
+func New(e *echo.Echo, i *Info) ApiRoot {
 	if e == nil {
 		panic("echoswagger: invalid Echo instance")
 	}
@@ -230,22 +223,35 @@ func New(e *echo.Echo, docPath string, i *Info, m ...echo.MiddlewareFunc) ApiRoo
 			Title: "Project APIs",
 		}
 	}
-	defs := make(RawDefineDic)
+	defs := RawDefineDic{
+		Schemas:   make(map[string]RawDefineSchema),
+		Responses: make(map[int]RawDefineReponse),
+	}
+
+	c := Components{
+		Schemas:         make(map[string]*JSONSchema),
+		Responses:       make(map[string]*Response),
+		SecuritySchemes: make(map[string]*SecurityScheme),
+	}
+
 	r := &Root{
 		echo: e,
 		spec: &Swagger{
-			Info:                i,
-			SecurityDefinitions: make(map[string]*SecurityDefinition),
-			Definitions:         make(map[string]*JSONSchema),
+			Info:       i,
+			Components: c,
 		},
 		routers: routers{
 			defs: &defs,
 		},
 	}
 
-	e.GET(connectPath(docPath), r.docHandler(docPath), m...)
-	e.GET(connectPath(docPath, SpecName), r.specHandler(docPath), m...)
 	return r
+}
+
+func (r *Root) BindEcho(docPath string, m ...echo.MiddlewareFunc) {
+	r.echo.GET(connectPath(docPath), r.docHandler(docPath), m...)
+	r.echo.GET(connectPath(docPath, "oauth2-redirect.html"), r.HTML, m...)
+	r.echo.GET(connectPath(docPath, SpecName), r.specHandler(docPath), m...)
 }
 
 func (r *Root) Add(method, path string, h echo.HandlerFunc, m ...echo.MiddlewareFunc) Api {
@@ -311,16 +317,6 @@ func (r *Root) BindGroup(name string, g *echo.Group) ApiGroup {
 	return &r.groups[len(r.groups)-1]
 }
 
-func (r *Root) SetRequestContentType(types ...string) ApiRoot {
-	r.spec.Consumes = types
-	return r
-}
-
-func (r *Root) SetResponseContentType(types ...string) ApiRoot {
-	r.spec.Produces = types
-	return r
-}
-
 func (r *Root) SetExternalDocs(desc, url string) ApiRoot {
 	r.spec.ExternalDocs = &ExternalDocs{
 		Description: desc,
@@ -329,15 +325,31 @@ func (r *Root) SetExternalDocs(desc, url string) ApiRoot {
 	return r
 }
 
+func (r *Root) AddSecurityBearer(name string) ApiRoot {
+	if !r.checkSecurity(name) {
+		return r
+	}
+	sd := &SecurityScheme{
+		Type:   "http",
+		Scheme: "bearer",
+	}
+	r.spec.Components.SecuritySchemes[name] = sd
+
+	r.spec.Security = append(r.spec.Security, map[string][]string{
+		name: []string{},
+	})
+	return r
+}
+
 func (r *Root) AddSecurityBasic(name, desc string) ApiRoot {
 	if !r.checkSecurity(name) {
 		return r
 	}
-	sd := &SecurityDefinition{
+	sd := &SecurityScheme{
 		Type:        string(SecurityBasic),
 		Description: desc,
 	}
-	r.spec.SecurityDefinitions[name] = sd
+	r.spec.Components.SecuritySchemes[name] = sd
 	return r
 }
 
@@ -345,13 +357,12 @@ func (r *Root) AddSecurityAPIKey(name, desc string, in SecurityInType) ApiRoot {
 	if !r.checkSecurity(name) {
 		return r
 	}
-	sd := &SecurityDefinition{
+	sd := &SecurityScheme{
 		Type:        string(SecurityAPIKey),
 		Description: desc,
 		Name:        name,
-		In:          string(in),
 	}
-	r.spec.SecurityDefinitions[name] = sd
+	r.spec.Components.SecuritySchemes[name] = sd
 	return r
 }
 
@@ -359,30 +370,37 @@ func (r *Root) AddSecurityOAuth2(name, desc string, flow OAuth2FlowType, authori
 	if !r.checkSecurity(name) {
 		return r
 	}
-	sd := &SecurityDefinition{
-		Type:             string(SecurityOAuth2),
-		Description:      desc,
-		Flow:             string(flow),
-		AuthorizationURL: authorizationUrl,
-		TokenURL:         tokenUrl,
-		Scopes:           scopes,
+	sd := &SecurityScheme{
+		Type:        string(SecurityOAuth2),
+		Description: desc,
+		Flows: map[OAuth2FlowType]Flow{
+			flow: {
+				AuthorizationURL: authorizationUrl,
+				TokenURL:         tokenUrl,
+				Scopes:           scopes,
+			},
+		},
 	}
-	r.spec.SecurityDefinitions[name] = sd
+	r.spec.Components.SecuritySchemes[name] = sd
+
+	r.spec.Security = append(r.spec.Security, map[string][]string{
+		name: {},
+	})
 	return r
+}
+
+func (r *Root) AddResponse(code int, contentType, desc string, schema, example interface{}) {
+	rv := indirectValue(schema)
+	r.defs.Responses[code] = RawDefineReponse{Response: &Response{
+		Description: desc,
+		Content: map[string]MediaType{
+			contentType: {Schema: r.defs.genSchema(rv), Example: example},
+		},
+	}}
 }
 
 func (r *Root) SetUI(ui UISetting) ApiRoot {
 	r.ui = ui
-	return r
-}
-
-func (r *Root) SetScheme(schemes ...string) ApiRoot {
-	for _, s := range schemes {
-		if !isValidScheme(s) {
-			panic("echoswagger: invalid protocol scheme")
-		}
-	}
-	r.spec.Schemes = schemes
 	return r
 }
 
@@ -468,6 +486,11 @@ func (g *group) SetSecurity(names ...string) ApiGroup {
 	return g
 }
 
+func (g *group) NoSecurity() ApiGroup {
+	g.security = make([]map[string][]string, 0)
+	return g
+}
+
 func (g *group) SetSecurityWithScope(s map[string][]string) ApiGroup {
 	g.security = setSecurityWithScope(g.security, s)
 	return g
@@ -509,8 +532,8 @@ func (a *api) AddParamHeaderNested(p interface{}) Api {
 	return a.addParams(p, ParamInHeader, "", "", false, true)
 }
 
-func (a *api) AddParamBody(p interface{}, name, desc string, required bool) Api {
-	return a.addBodyParams(p, name, desc, required)
+func (a *api) AddParamBody(p interface{}, contentType, desc string, required bool) Api {
+	return a.addBodyParams(p, contentType, desc, required)
 }
 
 func (a *api) AddParamFile(name, desc string, required bool) Api {
@@ -520,45 +543,58 @@ func (a *api) AddParamFile(name, desc string, required bool) Api {
 		In:          string(ParamInFormData),
 		Description: desc,
 		Required:    required,
-		Type:        "file",
+		Schema:      &JSONSchema{Type: "file"},
 	})
 	return a
 }
 
-func (a *api) AddResponse(code int, desc string, schema interface{}, header interface{}) Api {
-	r := &Response{
-		Description: desc,
-	}
-
-	st := reflect.TypeOf(schema)
-	if st != nil {
-		if !isValidSchema(st, false) {
-			panic("echoswagger: invalid response schema")
-		}
-		r.Schema = a.defs.genSchema(reflect.ValueOf(schema))
-	}
-
-	ht := reflect.TypeOf(header)
-	if ht != nil {
-		if !isValidParam(reflect.TypeOf(header), true, false) {
-			panic("echoswagger: invalid response header")
-		}
-		r.Headers = a.genHeader(reflect.ValueOf(header))
-	}
-
+func (a *api) AddResponse(code int, contentType, desc string, schema interface{}, header interface{}) Api {
 	cstr := strconv.Itoa(code)
-	a.operation.Responses[cstr] = r
+
+	response := a.operation.Responses[cstr]
+
+	if response == nil {
+		response = &Response{
+			Description: desc,
+			Content:     map[string]MediaType{},
+		}
+		a.operation.Responses[cstr] = response
+	}
+
+	if contentType == "" {
+		return a
+	}
+
+	for key, _ := range response.Content {
+		if key == contentType {
+			panic("echoswagger: multiple content type in response body are not allowed")
+		}
+	}
+
+	rv := indirectValue(schema)
+
+	response.Content[contentType] = MediaType{
+		Schema: a.defs.genSchema(rv),
+	}
+
+	//ht := reflect.TypeOf(header)
+	//if ht != nil {
+	//	if !isValidParam(reflect.TypeOf(header), true, false) {
+	//		panic("echoswagger: invalid response header")
+	//	}
+	//	//r.Headers = a.genHeader(reflect.ValueOf(header))
+	//}
+
 	return a
 }
 
-func (a *api) SetRequestContentType(types ...string) Api {
-	a.operation.Consumes = types
-	return a
-}
-
-func (a *api) SetResponseContentType(types ...string) Api {
-	a.operation.Produces = types
-	return a
+func (g *api) AddGenericResponses(statuses ...int) {
+	for _, status := range statuses {
+		code := strconv.Itoa(status)
+		g.operation.Responses[code] = &Response{
+			Ref: ResponsePrefix + code,
+		}
+	}
 }
 
 func (a *api) SetOperationId(id string) Api {

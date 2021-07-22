@@ -1,17 +1,18 @@
 package echoswagger
 
 import (
-	"encoding/xml"
+	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
 
 const (
-	DefPrefix      = "#/definitions/"
-	SwaggerVersion = "2.0"
+	SchemaPrefix   = "#/components/schemas/"
+	ResponsePrefix = "#/components/responses/"
+	SwaggerVersion = "3.0.1"
 	SpecName       = "swagger.json"
 )
 
@@ -21,15 +22,6 @@ func (r *Root) specHandler(docPath string) echo.HandlerFunc {
 		if err != nil {
 			return c.String(http.StatusInternalServerError, err.Error())
 		}
-		var basePath string
-		if uri, err := url.ParseRequestURI(c.Request().Referer()); err == nil {
-			basePath = trimSuffixSlash(uri.Path, docPath)
-			spec.Host = uri.Host
-		} else {
-			basePath = trimSuffixSlash(c.Request().URL.Path, connectPath(docPath, SpecName))
-			spec.Host = c.Request().Host
-		}
-		spec.BasePath = basePath
 		return c.JSON(http.StatusOK, spec)
 	}
 }
@@ -38,7 +30,6 @@ func (r *Root) specHandler(docPath string) echo.HandlerFunc {
 func (r *Root) GetSpec(c echo.Context, docPath string) (Swagger, error) {
 	r.once.Do(func() {
 		r.err = r.genSpec(c)
-		r.cleanUp()
 	})
 	if r.err != nil {
 		return Swagger{}, r.err
@@ -47,15 +38,26 @@ func (r *Root) GetSpec(c echo.Context, docPath string) (Swagger, error) {
 }
 
 func (r *Root) genSpec(c echo.Context) error {
-	r.spec.Swagger = SwaggerVersion
+	r.spec.Openapi = SwaggerVersion
 	r.spec.Paths = make(map[string]interface{})
 
 	for i := range r.groups {
 		group := &r.groups[i]
-		r.spec.Tags = append(r.spec.Tags, &group.tag)
+
+		found := false
+		for _, tag := range r.spec.Tags {
+			if tag.Name == group.tag.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			r.spec.Tags = append(r.spec.Tags, &group.tag)
+		}
+
 		for j := range group.apis {
 			a := &group.apis[j]
-			if err := a.operation.addSecurity(r.spec.SecurityDefinitions, group.security); err != nil {
+			if err := a.operation.addSecurity(r.spec.Components.SecuritySchemes, group.security); err != nil {
 				return err
 			}
 			if err := r.transfer(a); err != nil {
@@ -70,14 +72,17 @@ func (r *Root) genSpec(c echo.Context) error {
 		}
 	}
 
-	for k, v := range *r.defs {
-		r.spec.Definitions[k] = v.Schema
+	for k, v := range r.defs.Schemas {
+		r.spec.Components.Schemas[k] = v.Schema
+	}
+	for k, v := range r.defs.Responses {
+		r.spec.Components.Responses[fmt.Sprintf("%d", k)] = v.Response
 	}
 	return nil
 }
 
 func (r *Root) transfer(a *api) error {
-	if err := a.operation.addSecurity(r.spec.SecurityDefinitions, a.security); err != nil {
+	if err := a.operation.addSecurity(r.spec.Components.SecuritySchemes, a.security); err != nil {
 		return err
 	}
 
@@ -127,29 +132,39 @@ func (r *Root) cleanUp() {
 // addDefinition adds definition specification and returns
 // key of RawDefineDic
 func (r *RawDefineDic) addDefinition(v reflect.Value) string {
+	if i, ok := v.Interface().(Shim); ok {
+		v = reflect.ValueOf(i.Shim())
+	}
+
 	exist, key := r.getKey(v)
 	if exist {
 		return key
 	}
 
-	schema := &JSONSchema{
-		Type:       "object",
-		Properties: make(map[string]*JSONSchema),
+	var schema = &JSONSchema{}
+
+	if v.Kind() == reflect.String {
+		schema.Type = "string"
+		if i, ok := v.Interface().(Enum); ok {
+			schema.Enum = i.EnumValues()
+		} else {
+			panic("not enum")
+		}
+	} else {
+		schema.Type = "object"
+		schema.Properties = make(map[string]*JSONSchema)
+		r.handleStruct(v, schema)
 	}
 
-	(*r)[key] = RawDefine{
+	r.Schemas[key] = RawDefineSchema{
 		Value:  v,
 		Schema: schema,
 	}
 
-	r.handleStruct(v, schema)
+	if i, ok := v.Interface().(Description); ok {
+		schema.Description = i.Description()
+	}
 
-	if schema.XML == nil {
-		schema.XML = &XMLSchema{}
-	}
-	if schema.XML.Name == "" {
-		schema.XML.Name = v.Type().Name()
-	}
 	return key
 }
 
@@ -161,21 +176,44 @@ func (r *RawDefineDic) handleStruct(v reflect.Value, schema *JSONSchema) {
 		if name == "-" {
 			continue
 		}
-		if f.Type == reflect.TypeOf(xml.Name{}) {
-			schema.handleXMLTags(f)
-			continue
-		}
 		if f.Type.Kind() == reflect.Struct && f.Anonymous && !hasTag {
 			r.handleStruct(v.Field(i), schema)
 			continue
 		}
-		sp := r.genSchema(v.Field(i))
-		sp.handleXMLTags(f)
-		if sp.XML != nil {
-			sp.handleChildXMLTags(sp.XML.Name, r)
-		}
-		schema.Properties[name] = sp
 
-		schema.handleSwaggerTags(f, name)
+		var sp *JSONSchema
+		if strings.HasPrefix(f.Tag.Get("swagger"), "type") {
+			sp = &JSONSchema{}
+		} else {
+			sp = r.genSchema(v.Field(i))
+		}
+
+		tags := getSwaggerTags(f)
+
+		if _, ok := tags["required"]; ok {
+			schema.Required = append(schema.Required, name)
+		}
+
+		if sp.Ref == "" {
+			handleSwaggerTags(sp, f, tags)
+		}
+
+		schema.Properties[name] = sp
 	}
+}
+
+type Enum interface {
+	EnumValues() []interface{}
+}
+
+type Description interface {
+	Description() string
+}
+
+type Name interface {
+	StructName() string
+}
+
+type Shim interface {
+	Shim() interface{}
 }
